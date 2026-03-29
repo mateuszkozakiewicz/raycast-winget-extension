@@ -9,10 +9,9 @@ import {
   useNavigation,
 } from "@raycast/api";
 import { PackageDetail } from "./PackageDetail";
-import { spawn } from "node:child_process";
-import { useEffect, useRef, useState } from "react";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
+import { useEffect, useRef, useState } from "react";
 
 const execFileAsync = promisify(execFile);
 
@@ -21,6 +20,7 @@ type InstalledPackage = {
   id: string;
   version: string;
   available: string;
+  source: string;
 };
 
 // Unicode ranges for double-width (CJK etc.) characters.
@@ -43,13 +43,7 @@ export default function Command() {
     Promise.all([
       execFileAsync(
         "winget",
-        [
-          "list",
-          "--accept-source-agreements",
-          "--disable-interactivity",
-          "--source",
-          "winget",
-        ],
+        ["list", "--accept-source-agreements", "--disable-interactivity"],
         { maxBuffer: 10 * 1024 * 1024, encoding: "utf8" },
       ),
       execFileAsync("winget", ["pin", "list", "--accept-source-agreements"], {
@@ -107,6 +101,7 @@ export default function Command() {
   }
 
   async function uninstallPackage(pkg: InstalledPackage) {
+    if (uninstallingId !== null) return;
     const toast = await showToast({
       style: Toast.Style.Animated,
       title: "Uninstalling…",
@@ -245,6 +240,7 @@ export default function Command() {
           key={`${index}-${pkg.id}`}
           title={pkg.name}
           subtitle={pkg.id}
+          icon={uninstallingId === pkg.id ? { source: Icon.CircleProgress75, tintColor: Color.Red } : undefined}
           accessories={buildAccessories(pkg, pinnedIds)}
           actions={
             <ActionPanel>
@@ -263,7 +259,7 @@ export default function Command() {
                   onAction={() => uninstallPackage(pkg)}
                 />
               )}
-              {!pkg.id.startsWith("ARP\\") && (
+              {!pkg.id.startsWith("ARP\\") && pkg.source === "winget" && (
                 <Action
                   title={pinnedIds.has(pkg.id) ? "Unpin" : "Pin"}
                   icon={pinnedIds.has(pkg.id) ? Icon.PinDisabled : Icon.Pin}
@@ -291,11 +287,34 @@ export default function Command() {
   );
 }
 
+function normalizeSource(raw: string): string {
+  if (/^msst/i.test(raw)) return "msstore";
+  if (/^wing/i.test(raw)) return "winget";
+  return raw;
+}
+
 function buildAccessories(
   pkg: InstalledPackage,
   pinnedIds: Set<string>,
 ): List.Item.Accessory[] {
-  const accessories: List.Item.Accessory[] = [{ tag: `v${pkg.version}` }];
+  const accessories: List.Item.Accessory[] = [];
+
+  if (pkg.version.toLowerCase() !== "unknown" && pkg.version) {
+    accessories.push({ tag: `v${pkg.version}` });
+  }
+
+  switch (pkg.source) {
+    case "msstore":
+      accessories.push({ tag: { value: "msstore", color: Color.Blue } });
+      break;
+    case "winget":
+      accessories.push({ tag: { value: "winget", color: Color.Purple } });
+      break;
+    default:
+      accessories.push({
+        tag: { value: pkg.source || "local", color: Color.SecondaryText },
+      });
+  }
 
   if (pinnedIds.has(pkg.id)) {
     accessories.push({
@@ -368,12 +387,14 @@ function parseWingetListOutput(rawOutput: string): InstalledPackage[] {
   const idStart = headerLine.indexOf("Id");
   const versionStart = headerLine.indexOf("Version");
   const availableStart = headerLine.indexOf("Available"); // -1 when column absent
+  const sourceStart = headerLine.indexOf("Source"); // -1 when column absent
 
   if (nameStart < 0 || idStart < 0 || versionStart < 0) {
     return [];
   }
 
-  const versionEnd = availableStart >= 0 ? availableStart : -1;
+  const versionEnd =
+    availableStart >= 0 ? availableStart : sourceStart >= 0 ? sourceStart : -1;
 
   function isWide(cp: number): boolean {
     return WIDE_CHAR_RE.test(String.fromCodePoint(cp)) || cp >= 0x20000;
@@ -411,11 +432,16 @@ function parseWingetListOutput(rawOutput: string): InstalledPackage[] {
     const id = sliceCol(line, idStart, versionStart);
     const version = sliceCol(line, versionStart, versionEnd);
     const available =
-      availableStart >= 0 ? sliceCol(line, availableStart, -1) : "";
+      availableStart >= 0
+        ? sliceCol(line, availableStart, sourceStart >= 0 ? sourceStart : -1)
+        : "";
+    const source = normalizeSource(
+      sourceStart >= 0 ? sliceCol(line, sourceStart, -1) : "",
+    );
 
     if (!name || !id) continue;
 
-    result.push({ name, id, version, available });
+    result.push({ name, id, version, available, source });
   }
 
   return result;

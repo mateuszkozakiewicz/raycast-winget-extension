@@ -22,6 +22,7 @@ type UpgradePackage = {
   id: string;
   version: string;
   available: string;
+  source: string;
   status: PackageStatus;
 };
 
@@ -45,13 +46,7 @@ export default function Command() {
     Promise.all([
       execFileAsync(
         "winget",
-        [
-          "list",
-          "--source",
-          "winget",
-          "--accept-source-agreements",
-          "--disable-interactivity",
-        ],
+        ["list", "--accept-source-agreements", "--disable-interactivity"],
         { maxBuffer: 10 * 1024 * 1024, encoding: "utf8" },
       ),
       execFileAsync("winget", ["pin", "list", "--accept-source-agreements"], {
@@ -225,8 +220,25 @@ export default function Command() {
       ? `${doneCount} / ${packages.length} upgraded`
       : undefined;
 
+  const pendingCount = packages.filter((p) => p.status === "pending").length;
+
   return (
     <List isLoading={isLoading} navigationTitle={subtitle}>
+      <List.Item
+        key="__upgrade_all__"
+        title="Upgrade All"
+        subtitle={`${pendingCount} package${pendingCount !== 1 ? "s" : ""} pending`}
+        icon={Icon.ArrowClockwise}
+        actions={
+          <ActionPanel>
+            <Action
+              title="Upgrade All"
+              icon={Icon.ArrowClockwise}
+              onAction={upgradeAll}
+            />
+          </ActionPanel>
+        }
+      />
       {packages.map((pkg, index) => (
         <List.Item
           key={`${index}-${pkg.id}`}
@@ -237,24 +249,26 @@ export default function Command() {
           actions={
             <ActionPanel>
               <Action
-                title="Upgrade All"
-                icon={Icon.ArrowClockwise}
-                onAction={upgradeAll}
-              />
-              <Action
                 title="Upgrade"
                 icon={Icon.Download}
                 onAction={() => upgradeSingle(pkg)}
+              />
+              <Action
+                title="Upgrade All"
+                icon={Icon.ArrowClockwise}
+                onAction={upgradeAll}
               />
               <Action.CopyToClipboard
                 title="Copy Package ID"
                 content={pkg.id}
               />
-              <Action
-                title={pinnedIds.has(pkg.id) ? "Unpin" : "Pin"}
-                icon={pinnedIds.has(pkg.id) ? Icon.PinDisabled : Icon.Pin}
-                onAction={() => togglePin(pkg)}
-              />
+              {pkg.source === "winget" && (
+                <Action
+                  title={pinnedIds.has(pkg.id) ? "Unpin" : "Pin"}
+                  icon={pinnedIds.has(pkg.id) ? Icon.PinDisabled : Icon.Pin}
+                  onAction={() => togglePin(pkg)}
+                />
+              )}
               {!pkg.id.startsWith("ARP\\") && (
                 <Action
                   title="Show Details"
@@ -280,8 +294,7 @@ function runUpgrade(pkg: UpgradePackage, toast: Toast): Promise<boolean> {
         "upgrade",
         "--id",
         pkg.id,
-        "--source",
-        "winget",
+        ...(pkg.source ? ["--source", pkg.source] : []),
         "--accept-package-agreements",
         "--accept-source-agreements",
         "--disable-interactivity",
@@ -354,36 +367,65 @@ function statusIcon(
   }
 }
 
+function normalizeSource(raw: string): string {
+  if (/^msst/i.test(raw)) return "msstore";
+  if (/^wing/i.test(raw)) return "winget";
+  return raw;
+}
+
 function buildAccessories(
   pkg: UpgradePackage,
   pinnedIds: Set<string>,
 ): List.Item.Accessory[] {
+  const versionTag = (v: string): List.Item.Accessory => ({ tag: `v${v}` });
+
   const pinBadge: List.Item.Accessory[] = pinnedIds.has(pkg.id)
     ? [{ icon: Icon.Pin, tooltip: "Pinned — excluded from upgrades" }]
     : [];
+
+  const versionKnown = pkg.version && pkg.version.toLowerCase() !== "unknown";
+
+  const sourceAccessory = (source: string): List.Item.Accessory => {
+    switch (source) {
+      case "msstore":
+        return { tag: { value: "msstore", color: Color.Blue } };
+      case "winget":
+        return { tag: { value: "winget", color: Color.Purple } };
+      default:
+        return {
+          tag: { value: source || "local", color: Color.SecondaryText },
+        };
+    }
+  };
+  const sourceTag = sourceAccessory(pkg.source);
+
   switch (pkg.status) {
     case "upgrading":
       return [
         ...pinBadge,
-        { tag: `v${pkg.version}` },
+        ...(versionKnown ? [versionTag(pkg.version)] : []),
         { text: { value: `↑ ${pkg.available}`, color: Color.Orange } },
+        sourceTag,
       ];
     case "done":
       return [
         ...pinBadge,
         { tag: { value: `v${pkg.available}`, color: Color.Green } },
+        sourceTag,
       ];
     case "failed":
       return [
         ...pinBadge,
-        { tag: `v${pkg.version}` },
+        ...(versionKnown ? [versionTag(pkg.version)] : []),
         { text: { value: "Failed", color: Color.Red } },
+        sourceTag,
       ];
     default:
       return [
         ...pinBadge,
-        { tag: `v${pkg.version}` },
+        ...(versionKnown ? [versionTag(pkg.version)] : []),
         { tag: { value: `↑ ${pkg.available}`, color: Color.Green } },
+        sourceTag,
       ];
   }
 }
@@ -422,6 +464,7 @@ function parseWingetListOutput(rawOutput: string): {
   id: string;
   version: string;
   available: string;
+  source: string;
 }[] {
   const lines = rawOutput
     .split("\n")
@@ -445,12 +488,14 @@ function parseWingetListOutput(rawOutput: string): {
   const idStart = headerLine.indexOf("Id");
   const versionStart = headerLine.indexOf("Version");
   const availableStart = headerLine.indexOf("Available");
+  const sourceStart = headerLine.indexOf("Source"); // -1 when column absent
 
   if (nameStart < 0 || idStart < 0 || versionStart < 0) {
     return [];
   }
 
-  const versionEnd = availableStart >= 0 ? availableStart : -1;
+  const versionEnd =
+    availableStart >= 0 ? availableStart : sourceStart >= 0 ? sourceStart : -1;
 
   function isWide(cp: number): boolean {
     return WIDE_CHAR_RE.test(String.fromCodePoint(cp)) || cp >= 0x20000;
@@ -481,8 +526,13 @@ function parseWingetListOutput(rawOutput: string): {
     const id = sliceCol(line, idStart, versionStart);
     const version = sliceCol(line, versionStart, versionEnd);
     const available =
-      availableStart >= 0 ? sliceCol(line, availableStart, -1) : "";
+      availableStart >= 0
+        ? sliceCol(line, availableStart, sourceStart >= 0 ? sourceStart : -1)
+        : "";
+    const source = normalizeSource(
+      sourceStart >= 0 ? sliceCol(line, sourceStart, -1) : "",
+    );
     if (!name || !id) return [];
-    return [{ name, id, version, available }];
+    return [{ name, id, version, available, source }];
   });
 }

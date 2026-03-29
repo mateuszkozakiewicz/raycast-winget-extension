@@ -11,7 +11,18 @@
       "title": "Install",
       "description": "Search and install WinGet packages",
       "mode": "view",
-      "subtitle": "WinGet"
+      "subtitle": "WinGet",
+      "preferences": [
+        {
+          "name": "includeMsStore",
+          "title": "Sources",
+          "label": "Include Microsoft Store results",
+          "description": "When enabled searches both winget and Microsoft Store, when disabled only winget packages are shown.",
+          "type": "checkbox",
+          "default": false,
+          "required": false
+        }
+      ]
     },
     {
       "name": "uninstall",

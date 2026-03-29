@@ -2,9 +2,11 @@ import {
   Action,
   ActionPanel,
   Clipboard,
+  Color,
   Icon,
   List,
   Toast,
+  getPreferenceValues,
   showToast,
   useNavigation,
 } from "@raycast/api";
@@ -19,6 +21,7 @@ type WingetSearchResult = {
   name: string;
   id: string;
   version: string;
+  source: string;
 };
 
 const MIN_QUERY_LENGTH = 1;
@@ -39,6 +42,7 @@ export default function Command() {
   const [lastSearchedQuery, setLastSearchedQuery] = useState("");
   const [installingId, setInstallingId] = useState<string | null>(null);
   const cancelRef = useRef<(() => void) | null>(null);
+  const searchIdRef = useRef(0);
 
   const trimmedQuery = query.trim();
   const canSearch = trimmedQuery.length >= MIN_QUERY_LENGTH;
@@ -51,6 +55,7 @@ export default function Command() {
   }, [canSearch]);
 
   async function installPackage(id: string) {
+    if (installingId !== null) return;
     const toast = await showToast({
       style: Toast.Style.Animated,
       title: "Installing…",
@@ -195,16 +200,20 @@ export default function Command() {
 
     setIsLoading(true);
     setLastSearchedQuery(trimmedQuery);
+    const searchId = ++searchIdRef.current;
 
     try {
+      const { includeMsStore } = getPreferenceValues<{
+        includeMsStore: boolean;
+      }>();
+      const sourceArgs = includeMsStore ? [] : ["--source", "winget"];
       const { stdout, stderr } = await execFileAsync(
         "winget",
         [
           "search",
           "--name",
           trimmedQuery,
-          "--source",
-          "winget",
+          ...sourceArgs,
           "--disable-interactivity",
         ],
         {
@@ -214,6 +223,8 @@ export default function Command() {
       );
 
       const parsed = parseWingetSearchOutput(stdout);
+
+      if (searchIdRef.current !== searchId) return;
 
       if (stderr?.trim()) {
         await showToast({
@@ -225,6 +236,7 @@ export default function Command() {
 
       setResults(parsed);
     } catch (error) {
+      if (searchIdRef.current !== searchId) return;
       // winget exits non-zero with a specific message when no packages match.
       // Treat that as an empty result rather than a failure.
       const stdout = (error as { stdout?: string }).stdout ?? "";
@@ -239,7 +251,7 @@ export default function Command() {
         message: getErrorMessage(error),
       });
     } finally {
-      setIsLoading(false);
+      if (searchIdRef.current === searchId) setIsLoading(false);
     }
   }
 
@@ -266,7 +278,7 @@ export default function Command() {
       return (
         <List.EmptyView
           title="Search WinGet Packages"
-          description="Type a query and press Enter to run winget search"
+          description="Type a package name and press Enter to search"
           icon={Icon.MagnifyingGlass}
         />
       );
@@ -310,6 +322,7 @@ export default function Command() {
           key={`${index}-${item.id}`}
           title={item.name}
           subtitle={item.id}
+          icon={installingId === item.id ? { source: Icon.CircleProgress75, tintColor: Color.Blue } : undefined}
           accessories={buildAccessories(item)}
           actions={
             <ActionPanel>
@@ -380,13 +393,15 @@ function parseWingetSearchOutput(rawOutput: string): WingetSearchResult[] {
   const idStart = headerLine.indexOf("Id");
   const versionStart = headerLine.indexOf("Version");
   const matchStart = headerLine.indexOf("Match"); // -1 when column is absent
+  const sourceStart = headerLine.indexOf("Source"); // -1 when column is absent
 
   if (nameStart < 0 || idStart < 0 || versionStart < 0) {
     return [];
   }
 
-  // Version ends at Match column when present, otherwise to end of line.
-  const versionEnd = matchStart >= 0 ? matchStart : -1;
+  // Version ends at Match column, or Source column, or end of line — whichever comes first.
+  const versionEnd =
+    matchStart >= 0 ? matchStart : sourceStart >= 0 ? sourceStart : -1;
 
   // Slice a column from a data row using the visual column positions derived
   // from the header (which is always ASCII, so char index == visual column).
@@ -426,17 +441,46 @@ function parseWingetSearchOutput(rawOutput: string): WingetSearchResult[] {
     const name = sliceCol(line, nameStart, idStart);
     const id = sliceCol(line, idStart, versionStart);
     const version = sliceCol(line, versionStart, versionEnd) || "Unknown";
+    const source = normalizeSource(
+      sourceStart >= 0 ? sliceCol(line, sourceStart, -1) : "",
+    );
 
     if (!name || !id) continue;
 
-    parsed.push({ name, id, version });
+    parsed.push({ name, id, version, source });
   }
 
   return parsed;
 }
 
+function normalizeSource(raw: string): string {
+  if (/^msst/i.test(raw)) return "msstore";
+  if (/^wing/i.test(raw)) return "winget";
+  return raw;
+}
+
 function buildAccessories(item: WingetSearchResult): List.Item.Accessory[] {
-  return [{ tag: item.version ? `v${item.version}` : "Unknown" }];
+  const accessories: List.Item.Accessory[] = [];
+
+  if (item.version.toLowerCase() !== "unknown") {
+    accessories.push({ tag: `v${item.version}` });
+  }
+
+  switch (item.source) {
+    case "msstore":
+      accessories.push({ tag: { value: "msstore", color: Color.Blue } });
+      break;
+    case "winget":
+      accessories.push({ tag: { value: "winget", color: Color.Purple } });
+      break;
+    default:
+      if (item.source)
+        accessories.push({
+          tag: { value: item.source, color: Color.SecondaryText },
+        });
+  }
+
+  return accessories;
 }
 
 function getErrorMessage(error: unknown): string {
