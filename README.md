@@ -25,7 +25,11 @@ Browse all WinGet-managed packages installed on the system. Filter by name or ID
 
 ### Upgrade
 
-View all packages that have an update available. Each row shows the current version and the version it will upgrade to. Packages can be upgraded individually or all at once with **Upgrade All**. Progress is tracked per-row with live status icons.
+View all packages that have an update available (sourced directly from `winget upgrade`). Each row shows the current version and the version it will upgrade to. Packages can be upgraded individually or all at once with **Upgrade All**. Progress is tracked per-row with live status icons. The primary action switches to **Cancel** while an upgrade is running.
+
+Pinned packages are shown in the list but skipped by **Upgrade All** and cannot be upgraded individually — use **Unpin to Upgrade** in the Actions menu to unpin them first.
+
+If a portable package has been modified and winget refuses to replace it, the row is marked and a persistent **Upgrade with --force** action appears in the Actions menu.
 
 ![](./media/upgrade.png)
 
