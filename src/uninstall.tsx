@@ -117,7 +117,6 @@ export default function Command() {
           "remove",
           "--id",
           pkg.id,
-          "--silent",
           "--accept-source-agreements",
           "--disable-interactivity",
         ],
@@ -440,6 +439,7 @@ function parseWingetListOutput(rawOutput: string): InstalledPackage[] {
     );
 
     if (!name || !id) continue;
+    if (source !== "winget" && source !== "msstore") continue;
 
     result.push({ name, id, version, available, source });
   }
